@@ -4,11 +4,14 @@ import android.util.Log
 import com.milanwouters.weatherapp.data.local.dao.WeatherCacheDao
 import com.milanwouters.weatherapp.data.local.entity.toDomain
 import com.milanwouters.weatherapp.data.local.entity.toEntity
-import com.milanwouters.weatherapp.domain.model.*
+import com.milanwouters.weatherapp.domain.model.AlertSeverity
+import com.milanwouters.weatherapp.domain.model.AlertType
+import com.milanwouters.weatherapp.domain.model.WeatherAlert
+import com.milanwouters.weatherapp.domain.model.WeatherResult
+import com.milanwouters.weatherapp.domain.model.WeatherSourceItem
 import com.milanwouters.weatherapp.domain.repository.WeatherRepository
 import com.milanwouters.weatherapp.domain.repository.WeatherResult
 import com.milanwouters.weatherapp.util.SeedData
-import com.milanwouters.weatherapp.util.TanzaniaRegions
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
@@ -35,46 +38,49 @@ class TmaWeatherRepository @Inject constructor(
     private val tag = "TmaWeatherRepository"
 
     override suspend fun fetchLatestForecast(): WeatherResult = withContext(Dispatchers.IO) {
-        // Step 1: Try live TMA scraping
         try {
             Log.d(tag, "Starting live TMA scrape...")
             val tmaItems = scraperService.scrapeAll()
 
             if (tmaItems.isNotEmpty()) {
-                // Cache successful results
                 weatherCacheDao.clearCache()
                 weatherCacheDao.insertAll(tmaItems.map { it.toEntity() })
                 Log.d(tag, "Live scrape successful: ${tmaItems.size} items cached")
-                return@withContext WeatherResult.Success(tmaItems, isLive = true)
+                return@withContext WeatherResult.Success(
+                    items = tmaItems,
+                    isLive = true
+                )
             }
 
-            // TMA returned nothing, try ICPAC fallback
             Log.d(tag, "TMA returned no items, trying ICPAC fallback...")
             val icpacItems = icpacFallback.fetchIcpacForecast()
 
             if (icpacItems.isNotEmpty()) {
-                val combined = (tmaItems + icpacItems).distinctBy { it.id }
                 weatherCacheDao.clearCache()
-                weatherCacheDao.insertAll(combined.map { it.toEntity() })
-                return@withContext WeatherResult.Success(combined, isLive = true)
+                weatherCacheDao.insertAll(icpacItems.map { it.toEntity() })
+                Log.d(tag, "ICPAC fallback successful: ${icpacItems.size} items cached")
+                return@withContext WeatherResult.Success(
+                    items = icpacItems,
+                    isLive = true
+                )
             }
 
-            // Both live sources failed, fall back to cache
             return@withContext loadFromCache()
-
         } catch (e: Exception) {
-            Log.w(tag, "Live scrape failed: ${e.message}")
+            Log.w(tag, "Live scrape failed: ${e.message}", e)
             return@withContext loadFromCache()
         }
     }
 
     private suspend fun loadFromCache(): WeatherResult {
         val cached = weatherCacheDao.getCachedItemsOnce()
+
         return if (cached.isNotEmpty()) {
             Log.d(tag, "Returning ${cached.size} cached items")
-            WeatherResult.Cached(cached.map { it.toDomain() })
+            WeatherResult.Cached(
+                items = cached.map { it.toDomain() }
+            )
         } else {
-            // Final fallback: use demo data
             Log.d(tag, "No cache available, using demo fallback data")
             WeatherResult.Error(
                 message = "TMA website unreachable. Using demo data for demonstration.",
@@ -108,53 +114,95 @@ object AlertParser {
 
         for (item in items) {
             val text = "${item.title} ${item.rawText}".lowercase()
-            val regions = item.regionText.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+            val regions = item.regionText
+                .split(",")
+                .map { it.trim() }
+                .filter { it.isNotEmpty() }
 
-            // Determine target regions
             val targetRegions = if (regions.isEmpty()) listOf("") else regions
 
             for (targetRegion in targetRegions) {
-                val targetCity = if (item.cityText.isNotBlank()) item.cityText.split(",").firstOrNull()?.trim() ?: "" else ""
+                val targetCity = if (item.cityText.isNotBlank()) {
+                    item.cityText.split(",").firstOrNull()?.trim().orEmpty()
+                } else {
+                    ""
+                }
 
                 when {
-                    "flood" in text -> alerts.add(createAlert(
-                        AlertType.FLOOD_RISK, targetRegion, targetCity, item,
-                        message = "Flood risk detected. ${item.summary}",
-                        recommendation = "Move livestock to higher ground. Avoid low-lying areas and river banks. Check water channels."
-                    ))
-                    "heavy rainfall" in text || "heavy rain" in text -> alerts.add(createAlert(
-                        AlertType.HEAVY_RAIN, targetRegion, targetCity, item,
-                        message = "Heavy rainfall expected. ${item.summary}",
-                        recommendation = "Protect seedlings from waterlogging. Delay planting on slopes. Ensure drainage channels are clear."
-                    ))
-                    "heat stress" in text -> alerts.add(createAlert(
-                        AlertType.HEAT_STRESS, targetRegion, targetCity, item,
-                        message = "Heat stress conditions. ${item.summary}",
-                        recommendation = "Increase irrigation frequency. Provide shade for livestock. Harvest early if crops are mature."
-                    ))
-                    "less than usual rainfall" in text || "below normal rainfall" in text || "drought" in text -> alerts.add(createAlert(
-                        AlertType.DROUGHT_RISK, targetRegion, targetCity, item,
-                        message = "Drought risk. ${item.summary}",
-                        recommendation = "Conserve water. Consider drought-resistant crops. Reduce livestock numbers if pasture is limited."
-                    ))
-                    "strong wind" in text || "gale" in text -> alerts.add(createAlert(
-                        AlertType.STRONG_WIND, targetRegion, targetCity, item,
-                        message = "Strong winds expected. ${item.summary}",
-                        recommendation = "Secure loose structures. Protect young crops. Avoid working in open fields during peak wind."
-                    ))
-                    else -> alerts.add(createAlert(
-                        AlertType.GENERAL_UPDATE, targetRegion, targetCity, item,
-                        message = item.summary,
-                        recommendation = "Monitor weather conditions. Check TMA website for updates."
-                    ))
+                    "flood" in text -> alerts.add(
+                        createAlert(
+                            type = AlertType.FLOOD_RISK,
+                            targetRegion = targetRegion,
+                            targetCity = targetCity,
+                            source = item,
+                            message = "Flood risk detected. ${item.summary}",
+                            recommendation = "Move livestock to higher ground. Avoid low-lying areas and river banks. Check water channels."
+                        )
+                    )
+
+                    "heavy rainfall" in text || "heavy rain" in text -> alerts.add(
+                        createAlert(
+                            type = AlertType.HEAVY_RAIN,
+                            targetRegion = targetRegion,
+                            targetCity = targetCity,
+                            source = item,
+                            message = "Heavy rainfall expected. ${item.summary}",
+                            recommendation = "Protect seedlings from waterlogging. Delay planting on slopes. Ensure drainage channels are clear."
+                        )
+                    )
+
+                    "heat stress" in text -> alerts.add(
+                        createAlert(
+                            type = AlertType.HEAT_STRESS,
+                            targetRegion = targetRegion,
+                            targetCity = targetCity,
+                            source = item,
+                            message = "Heat stress conditions. ${item.summary}",
+                            recommendation = "Increase irrigation frequency. Provide shade for livestock. Harvest early if crops are mature."
+                        )
+                    )
+
+                    "less than usual rainfall" in text ||
+                            "below normal rainfall" in text ||
+                            "drought" in text -> alerts.add(
+                        createAlert(
+                            type = AlertType.DROUGHT_RISK,
+                            targetRegion = targetRegion,
+                            targetCity = targetCity,
+                            source = item,
+                            message = "Drought risk. ${item.summary}",
+                            recommendation = "Conserve water. Consider drought-resistant crops. Reduce livestock numbers if pasture is limited."
+                        )
+                    )
+
+                    "strong wind" in text || "gale" in text -> alerts.add(
+                        createAlert(
+                            type = AlertType.STRONG_WIND,
+                            targetRegion = targetRegion,
+                            targetCity = targetCity,
+                            source = item,
+                            message = "Strong winds expected. ${item.summary}",
+                            recommendation = "Secure loose structures. Protect young crops. Avoid working in open fields during peak wind."
+                        )
+                    )
+
+                    else -> alerts.add(
+                        createAlert(
+                            type = AlertType.GENERAL_UPDATE,
+                            targetRegion = targetRegion,
+                            targetCity = targetCity,
+                            source = item,
+                            message = item.summary,
+                            recommendation = "Monitor weather conditions. Check TMA website for updates."
+                        )
+                    )
                 }
             }
         }
 
-        // Remove duplicate alert types for same region
         return alerts
             .groupBy { "${it.alertType}-${it.targetRegion}" }
-            .map { (_, group) -> group.maxByOrNull { it.severity.priority }!! }
+            .mapNotNull { (_, group) -> group.maxByOrNull { it.severity.priority } }
             .sortedByDescending { it.severity.priority }
     }
 
@@ -167,11 +215,11 @@ object AlertParser {
         recommendation: String
     ): WeatherAlert {
         val severity = when (type) {
-            AlertType.FLOOD_RISK -> maxOf(source.severity, AlertSeverity.HIGH) { a, b -> a.priority - b.priority }
-            AlertType.HEAVY_RAIN -> maxOf(source.severity, AlertSeverity.MEDIUM) { a, b -> a.priority - b.priority }
-            AlertType.HEAT_STRESS -> maxOf(source.severity, AlertSeverity.MEDIUM) { a, b -> a.priority - b.priority }
-            AlertType.DROUGHT_RISK -> maxOf(source.severity, AlertSeverity.MEDIUM) { a, b -> a.priority - b.priority }
-            AlertType.STRONG_WIND -> maxOf(source.severity, AlertSeverity.HIGH) { a, b -> a.priority - b.priority }
+            AlertType.FLOOD_RISK -> highestSeverity(source.severity, AlertSeverity.HIGH)
+            AlertType.HEAVY_RAIN -> highestSeverity(source.severity, AlertSeverity.MEDIUM)
+            AlertType.HEAT_STRESS -> highestSeverity(source.severity, AlertSeverity.MEDIUM)
+            AlertType.DROUGHT_RISK -> highestSeverity(source.severity, AlertSeverity.MEDIUM)
+            AlertType.STRONG_WIND -> highestSeverity(source.severity, AlertSeverity.HIGH)
             AlertType.GENERAL_UPDATE -> source.severity
         }
 
@@ -187,5 +235,9 @@ object AlertParser {
             sourceUrl = source.sourceUrl,
             sourceText = source.rawText.take(300)
         )
+    }
+
+    private fun highestSeverity(a: AlertSeverity, b: AlertSeverity): AlertSeverity {
+        return if (a.priority >= b.priority) a else b
     }
 }
