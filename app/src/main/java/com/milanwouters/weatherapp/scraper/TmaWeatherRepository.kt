@@ -7,7 +7,6 @@ import com.milanwouters.weatherapp.data.local.entity.toEntity
 import com.milanwouters.weatherapp.domain.model.AlertSeverity
 import com.milanwouters.weatherapp.domain.model.AlertType
 import com.milanwouters.weatherapp.domain.model.WeatherAlert
-import com.milanwouters.weatherapp.domain.model.WeatherResult
 import com.milanwouters.weatherapp.domain.model.WeatherSourceItem
 import com.milanwouters.weatherapp.domain.repository.WeatherRepository
 import com.milanwouters.weatherapp.domain.repository.WeatherResult
