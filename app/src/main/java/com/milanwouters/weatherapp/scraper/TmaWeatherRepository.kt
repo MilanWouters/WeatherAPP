@@ -6,6 +6,7 @@ import com.milanwouters.weatherapp.data.local.entity.toDomain
 import com.milanwouters.weatherapp.data.local.entity.toEntity
 import com.milanwouters.weatherapp.domain.model.*
 import com.milanwouters.weatherapp.domain.repository.WeatherRepository
+import com.milanwouters.weatherapp.domain.repository.WeatherResult
 import com.milanwouters.weatherapp.util.SeedData
 import com.milanwouters.weatherapp.util.TanzaniaRegions
 import kotlinx.coroutines.Dispatchers
